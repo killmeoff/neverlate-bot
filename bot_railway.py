@@ -27,6 +27,39 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 app = Flask(__name__)
 
+# === ФУНКЦИИ ДЛЯ РАБОТЫ С АДМИНАМИ ===
+def save_admins():
+    with open('admins.txt', 'w') as f:
+        for admin_id in ADMIN_IDS:
+            f.write(str(admin_id) + '\n')
+
+def load_admins():
+    global ADMIN_IDS
+    try:
+        with open('admins.txt', 'r') as f:
+            ADMIN_IDS = [int(line.strip()) for line in f.readlines()]
+    except FileNotFoundError:
+        save_admins()
+
+def add_admin(user_id):
+    if user_id not in ADMIN_IDS:
+        ADMIN_IDS.append(user_id)
+        save_admins()
+        return True
+    return False
+
+def remove_admin(user_id):
+    if user_id in ADMIN_IDS and user_id != ADMIN_IDS[0]:
+        ADMIN_IDS.remove(user_id)
+        save_admins()
+        return True
+    return False
+
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
+
+load_admins()
+
 # === БАЗА ДАННЫХ ===
 def init_db():
     conn = sqlite3.connect('shop.db')
@@ -72,7 +105,8 @@ def init_db():
             status TEXT DEFAULT 'pending',
             label TEXT UNIQUE,
             created_at TEXT,
-            paid_at TEXT
+            paid_at TEXT,
+            admin_notified INTEGER DEFAULT 0
         )
     ''')
     
@@ -85,7 +119,6 @@ def init_db():
     
     conn.commit()
     
-    # Тексты по умолчанию
     default_texts = {
         'welcome': (
             "╭━━━━━━━━━━━━━━━━━━╮\n"
@@ -122,6 +155,18 @@ def init_db():
             "│  Ссылка: {file_url}\n"
             "├─────────────────────────────┤\n"
             "│  📸 **Отзыв:** @inlezz\n"
+            "╰─────────────────────────────╯"
+        ),
+        'cancel': (
+            "╭─────────────────────────────╮\n"
+            "│       ❌ ЗАКАЗ ОТМЕНЕН      │\n"
+            "├─────────────────────────────┤\n"
+            "│  Заказ #{order_id}\n"
+            "│  Товар: {product_name}\n"
+            "│  Сумма: {price} руб.\n"
+            "├─────────────────────────────┤\n"
+            "│  Платёж не найден.\n"
+            "│  Если вы оплатили, свяжитесь с @inlezz\n"
             "╰─────────────────────────────╯"
         ),
         'about': (
@@ -161,6 +206,16 @@ def get_text(key, **kwargs):
             return result[0]
     return "Текст не найден"
 
+def update_text(key, new_text):
+    conn = sqlite3.connect('shop.db')
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE texts SET value = ? WHERE key = ?",
+        (new_text, key)
+    )
+    conn.commit()
+    conn.close()
+
 # === ПРОВЕРКА АДМИНА ===
 def is_admin(user_id):
     return user_id in ADMIN_IDS
@@ -180,7 +235,11 @@ def get_admin_keyboard():
     keyboard = [
         [KeyboardButton(text="📁 Создать категорию")],
         [KeyboardButton(text="➕ Добавить товар")],
+        [KeyboardButton(text="📝 Редактор текстов")],
+        [KeyboardButton(text="👥 Управление админами")],
         [KeyboardButton(text="📋 Все заказы")],
+        [KeyboardButton(text="🗑 Управление товарами")],
+        [KeyboardButton(text="🗑 Удалить категорию")],
         [KeyboardButton(text="🔙 На главную")]
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -240,18 +299,33 @@ def get_admin_categories_inline():
 def get_admin_products_inline():
     conn = sqlite3.connect('shop.db')
     cursor = conn.cursor()
-    cursor.execute("SELECT id, name FROM products ORDER BY created_at DESC")
+    cursor.execute("""
+        SELECT p.id, p.name, c.name 
+        FROM products p
+        JOIN categories c ON p.category_id = c.id
+        ORDER BY p.created_at DESC
+    """)
     products = cursor.fetchall()
     conn.close()
     
     keyboard = []
     for p in products:
-        keyboard.append([InlineKeyboardButton(text=f"❌ {p[1]}", callback_data=f"delprod_{p[0]}")])
+        keyboard.append([InlineKeyboardButton(text=f"❌ [{p[2]}] {p[1]}", callback_data=f"delprod_{p[0]}")])
     
     keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_adm")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# === КОМАНДЫ ===
+def get_texts_inline():
+    keyboard = [
+        [InlineKeyboardButton(text="📝 Приветствие", callback_data="edit_welcome")],
+        [InlineKeyboardButton(text="💰 Сообщение об оплате", callback_data="edit_payment")],
+        [InlineKeyboardButton(text="✅ Сообщение об успехе", callback_data="edit_success")],
+        [InlineKeyboardButton(text="ℹ️ О нас", callback_data="edit_about")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_adm")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+# === КОМАНДА СТАРТ ===
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: Message):
     user = message.from_user
@@ -264,6 +338,7 @@ async def cmd_start(message: Message):
     
     await message.answer(get_text('welcome'), reply_markup=get_main_keyboard(is_admin(user.id)))
 
+# === КАТАЛОГ ===
 @dp.message_handler(lambda msg: msg.text == "🛍 Каталог")
 async def catalog(message: Message):
     conn = sqlite3.connect('shop.db')
@@ -278,6 +353,7 @@ async def catalog(message: Message):
     
     await message.answer("📁 Выберите категорию:", reply_markup=get_categories_inline())
 
+# === О НАС ===
 @dp.message_handler(lambda msg: msg.text == "ℹ️ О нас")
 async def about(message: Message):
     conn = sqlite3.connect('shop.db')
@@ -301,6 +377,7 @@ async def about(message: Message):
                                   total_customers=total_customers, total_sales=total_sales),
                          reply_markup=contact_keyboard)
 
+# === МОИ ЗАКАЗЫ ===
 @dp.message_handler(lambda msg: msg.text == "📦 Мои заказы")
 async def my_orders(message: Message):
     conn = sqlite3.connect('shop.db')
@@ -329,12 +406,204 @@ async def my_orders(message: Message):
     
     await message.answer(text)
 
+# === АДМИНКА ===
 @dp.message_handler(lambda msg: msg.text == "⚙️ Админка")
 async def admin_panel(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔️ Нет доступа")
         return
     await message.answer("⚙️ Админ-панель:", reply_markup=get_admin_keyboard())
+
+# === УПРАВЛЕНИЕ АДМИНАМИ ===
+@dp.message_handler(lambda msg: msg.text == "👥 Управление админами")
+async def admin_management(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    
+    text = "👥 **Управление администраторами**\n\n"
+    text += f"👑 Главный админ: `{ADMIN_IDS[0]}`\n"
+    text += "📋 Список админов:\n"
+    
+    for admin_id in ADMIN_IDS:
+        text += f"  • `{admin_id}`\n"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить админа", callback_data="add_admin")],
+        [InlineKeyboardButton(text="❌ Удалить админа", callback_data="remove_admin")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_adm")]
+    ])
+    
+    await message.answer(text, reply_markup=keyboard)
+
+# Состояния для добавления админа
+add_admin_data = {}
+
+@dp.callback_query_handler(lambda c: c.data == "add_admin")
+async def add_admin_start(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔️ Нет доступа", show_alert=True)
+        return
+    
+    add_admin_data[callback.from_user.id] = True
+    await callback.message.delete()
+    await callback.message.answer(
+        "📝 Отправь Telegram ID нового админа:\n"
+        "(можно узнать у @userinfobot)",
+        reply_markup=get_cancel_keyboard()
+    )
+    await callback.answer()
+
+@dp.message_handler(lambda msg: msg.from_user.id in add_admin_data)
+async def add_admin_process(message: Message):
+    user_id = message.from_user.id
+    
+    if message.text == "❌ Отмена":
+        del add_admin_data[user_id]
+        await message.answer("❌ Отменено", reply_markup=get_admin_keyboard())
+        return
+    
+    try:
+        new_admin_id = int(message.text.strip())
+        if add_admin(new_admin_id):
+            await message.answer(
+                f"✅ Админ {new_admin_id} добавлен!",
+                reply_markup=get_admin_keyboard()
+            )
+        else:
+            await message.answer("❌ Этот пользователь уже админ")
+    except ValueError:
+        await message.answer("❌ Введите корректный ID (только цифры)")
+    
+    del add_admin_data[user_id]
+
+@dp.callback_query_handler(lambda c: c.data == "remove_admin")
+async def remove_admin_start(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔️ Нет доступа", show_alert=True)
+        return
+    
+    if len(ADMIN_IDS) <= 1:
+        await callback.answer("❌ Нельзя удалить последнего админа", show_alert=True)
+        return
+    
+    keyboard = []
+    for admin_id in ADMIN_IDS:
+        if admin_id != ADMIN_IDS[0]:
+            keyboard.append([InlineKeyboardButton(
+                text=f"❌ {admin_id}",
+                callback_data=f"deladmin_{admin_id}"
+            )])
+    
+    keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_adm")])
+    
+    await callback.message.edit_text(
+        "Выберите админа для удаления:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
+    await callback.answer()
+
+@dp.callback_query_handler(lambda c: c.data.startswith('deladmin_'))
+async def remove_admin_process(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔️ Нет доступа", show_alert=True)
+        return
+    
+    admin_id = int(callback.data.split('_')[1])
+    
+    if remove_admin(admin_id):
+        await callback.answer("✅ Админ удален", show_alert=True)
+    else:
+        await callback.answer("❌ Нельзя удалить главного админа", show_alert=True)
+    
+    text = "👥 **Управление администраторами**\n\n"
+    text += f"👑 Главный админ: `{ADMIN_IDS[0]}`\n"
+    text += "📋 Список админов:\n"
+    
+    for aid in ADMIN_IDS:
+        text += f"  • `{aid}`\n"
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить админа", callback_data="add_admin")],
+        [InlineKeyboardButton(text="❌ Удалить админа", callback_data="remove_admin")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="back_adm")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard)
+
+# === УПРАВЛЕНИЕ ТОВАРАМИ ===
+@dp.message_handler(lambda msg: msg.text == "🗑 Управление товарами")
+async def manage_products(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    
+    conn = sqlite3.connect('shop.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM products")
+    count = cursor.fetchone()[0]
+    conn.close()
+    
+    if count == 0:
+        await message.answer("📭 Нет товаров для удаления")
+        return
+    
+    await message.answer(
+        "🗑 Выберите товар для удаления:",
+        reply_markup=get_admin_products_inline()
+    )
+
+# === РЕДАКТОР ТЕКСТОВ ===
+@dp.message_handler(lambda msg: msg.text == "📝 Редактор текстов")
+async def text_editor(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer(
+        "📝 Выберите текст для редактирования:",
+        reply_markup=get_texts_inline()
+    )
+
+# Состояния для редактирования текстов
+edit_text_data = {}
+
+@dp.callback_query_handler(lambda c: c.data.startswith('edit_'))
+async def start_edit_text(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔️ Нет доступа", show_alert=True)
+        return
+    
+    text_key = callback.data.replace('edit_', '')
+    edit_text_data[callback.from_user.id] = {'key': text_key}
+    
+    current_text = get_text(text_key)
+    
+    await callback.message.delete()
+    await callback.message.answer(
+        f"📝 Редактирование текста:\n\n"
+        f"Текущий текст:\n{current_text}\n\n"
+        f"Отправь новый текст (или нажми ❌ Отмена):",
+        reply_markup=get_cancel_keyboard()
+    )
+    await callback.answer()
+
+@dp.message_handler(lambda msg: msg.from_user.id in edit_text_data)
+async def process_edit_text(message: Message):
+    user_id = message.from_user.id
+    
+    if message.text == "❌ Отмена":
+        del edit_text_data[user_id]
+        await message.answer("❌ Отменено", reply_markup=get_admin_keyboard())
+        return
+    
+    data = edit_text_data[user_id]
+    text_key = data['key']
+    new_text = message.text
+    
+    update_text(text_key, new_text)
+    del edit_text_data[user_id]
+    
+    await message.answer(
+        f"✅ Текст '{text_key}' обновлен!",
+        reply_markup=get_admin_keyboard()
+    )
 
 # === СОЗДАНИЕ КАТЕГОРИИ ===
 cat_data = {}
@@ -344,27 +613,37 @@ async def create_category_start(message: Message):
     if not is_admin(message.from_user.id):
         return
     cat_data[message.from_user.id] = True
-    await message.answer("Введите название категории:", reply_markup=get_cancel_keyboard())
+    await message.answer("Введите название категории (например: Neverlose, Читы и т.д.):", 
+                        reply_markup=get_cancel_keyboard())
 
 @dp.message_handler(lambda msg: msg.from_user.id in cat_data)
 async def create_category_process(message: Message):
     user_id = message.from_user.id
+    
     if message.text == "❌ Отмена":
         del cat_data[user_id]
         await message.answer("❌ Отменено", reply_markup=get_admin_keyboard())
         return
     
+    category_name = message.text.strip()
+    
     try:
         conn = sqlite3.connect('shop.db')
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO categories (name, created_at) VALUES (?, ?)",
-                       (message.text, str(datetime.now())))
+        cursor.execute(
+            "INSERT INTO categories (name, created_at) VALUES (?, ?)",
+            (category_name, str(datetime.now()))
+        )
         conn.commit()
         conn.close()
+        
         del cat_data[user_id]
-        await message.answer(f"✅ Категория '{message.text}' создана!", reply_markup=get_admin_keyboard())
-    except:
-        await message.answer("❌ Ошибка. Возможно, такая категория уже есть")
+        await message.answer(f"✅ Категория '{category_name}' создана!", 
+                            reply_markup=get_admin_keyboard())
+    except sqlite3.IntegrityError:
+        await message.answer("❌ Такая категория уже существует!")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 
 # === УДАЛЕНИЕ КАТЕГОРИИ ===
 @dp.message_handler(lambda msg: msg.text == "🗑 Удалить категорию")
@@ -379,10 +658,11 @@ async def delete_category_menu(message: Message):
     conn.close()
     
     if count == 0:
-        await message.answer("📭 Нет категорий")
+        await message.answer("📭 Нет категорий для удаления")
         return
     
-    await message.answer("Выберите категорию для удаления:", reply_markup=get_admin_categories_inline())
+    await message.answer("Выберите категорию для удаления:", 
+                        reply_markup=get_admin_categories_inline())
 
 # === ДОБАВЛЕНИЕ ТОВАРА ===
 product_data = {}
@@ -399,7 +679,7 @@ async def add_product_start(message: Message):
     conn.close()
     
     if count == 0:
-        await message.answer("❌ Сначала создайте категорию!")
+        await message.answer("❌ Сначала создайте хотя бы одну категорию!")
         return
     
     product_data[message.from_user.id] = {'step': 'category'}
@@ -412,9 +692,15 @@ async def add_product_start(message: Message):
     
     keyboard = []
     for cat in categories:
-        keyboard.append([InlineKeyboardButton(text=cat[1], callback_data=f"selcat_{cat[0]}")])
+        keyboard.append([InlineKeyboardButton(
+            text=cat[1],
+            callback_data=f"selcat_{cat[0]}"
+        )])
     
-    await message.answer("Выберите категорию:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await message.answer(
+        "Выберите категорию для товара:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard)
+    )
 
 @dp.callback_query_handler(lambda c: c.data.startswith('selcat_'))
 async def select_category(callback: CallbackQuery):
@@ -428,7 +714,10 @@ async def select_category(callback: CallbackQuery):
     product_data[user_id]['step'] = 'name'
     
     await callback.message.delete()
-    await callback.message.answer("Введите название товара:", reply_markup=get_cancel_keyboard())
+    await callback.message.answer(
+        "Введите название товара:",
+        reply_markup=get_cancel_keyboard()
+    )
     await callback.answer()
 
 @dp.message_handler(lambda msg: msg.from_user.id in product_data)
@@ -444,7 +733,7 @@ async def add_product_process(message: Message):
     if data['step'] == 'name':
         data['name'] = message.text
         data['step'] = 'desc'
-        await message.answer("Введите описание:")
+        await message.answer("Введите описание товара:")
     
     elif data['step'] == 'desc':
         data['desc'] = message.text
@@ -457,10 +746,12 @@ async def add_product_process(message: Message):
             if price <= 0:
                 await message.answer("Цена должна быть больше 0!")
                 return
+            
             data['price'] = price
             data['step'] = 'file'
-            await message.answer("Введите ссылку на файл:")
-        except:
+            await message.answer("Введите ссылку на файл/конфиг для автоматической выдачи:")
+            
+        except ValueError:
             await message.answer("Введите число!")
     
     elif data['step'] == 'file':
@@ -469,34 +760,17 @@ async def add_product_process(message: Message):
         conn = sqlite3.connect('shop.db')
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO products (category_id, name, description, price, file_url, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (data['category_id'], data['name'], data['desc'], data['price'], data['file_url'], str(datetime.now()))
+            "INSERT INTO products (category_id, name, description, price, file_url, photo_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (data['category_id'], data['name'], data['desc'], data['price'], data['file_url'], None, str(datetime.now()))
         )
         conn.commit()
         conn.close()
         
         del product_data[user_id]
-        await message.answer("✅ Товар добавлен!", reply_markup=get_admin_keyboard())
+        await message.answer("✅ Товар добавлен! При оплате файл будет выдан автоматически.", 
+                            reply_markup=get_admin_keyboard())
 
-# === УДАЛЕНИЕ ТОВАРА ===
-@dp.message_handler(lambda msg: msg.text == "🗑 Удалить товар")
-async def delete_product_menu(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    
-    conn = sqlite3.connect('shop.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM products")
-    count = cursor.fetchone()[0]
-    conn.close()
-    
-    if count == 0:
-        await message.answer("📭 Нет товаров")
-        return
-    
-    await message.answer("Выберите товар для удаления:", reply_markup=get_admin_products_inline())
-
-# === ВСЕ ЗАКАЗЫ ===
+# === ВСЕ ЗАКАЗЫ (ДЛЯ АДМИНА) ===
 @dp.message_handler(lambda msg: msg.text == "📋 Все заказы")
 async def all_orders(message: Message):
     if not is_admin(message.from_user.id):
@@ -519,19 +793,26 @@ async def all_orders(message: Message):
         await message.answer("📭 Заказов нет")
         return
     
-    text = "📊 Заказы:\n\n"
+    text = "📊 ПОСЛЕДНИЕ ЗАКАЗЫ:\n\n"
     for o in orders:
         status = "✅" if o[4] == "paid" else "⏳"
-        text += f"{status} #{o[0]} @{o[1]}: {o[2]} - {o[3]} руб.\n"
+        text += f"{status} Заказ #{o[0]}\n"
+        text += f"👤 @{o[1] or 'нет'}\n"
+        text += f"📦 {o[2]}\n"
+        text += f"💰 {o[3]} руб.\n"
+        text += f"📅 {o[5][:16]}\n\n"
     
-    await message.answer(text)
+    await message.answer(text[:4000])
 
 # === НА ГЛАВНУЮ ===
 @dp.message_handler(lambda msg: msg.text == "🔙 На главную")
 async def back_main(message: Message):
-    await message.answer("Главное меню:", reply_markup=get_main_keyboard(is_admin(message.from_user.id)))
+    await message.answer(
+        "Главное меню:",
+        reply_markup=get_main_keyboard(is_admin(message.from_user.id))
+    )
 
-# === КАТЕГОРИИ ===
+# === ОБРАБОТКА КАТЕГОРИЙ ===
 @dp.callback_query_handler(lambda c: c.data.startswith('cat_'))
 async def show_category(callback: CallbackQuery):
     category_id = int(callback.data.split('_')[1])
@@ -540,18 +821,35 @@ async def show_category(callback: CallbackQuery):
     cursor = conn.cursor()
     cursor.execute("SELECT name FROM categories WHERE id = ?", (category_id,))
     cat = cursor.fetchone()
+    cursor.execute("SELECT COUNT(*) FROM products WHERE category_id = ?", (category_id,))
+    count = cursor.fetchone()[0]
     conn.close()
     
-    await callback.message.edit_text(f"📁 {cat[0]}\n\nВыберите товар:",
-                                     reply_markup=get_products_by_category_inline(category_id))
+    if count == 0:
+        await callback.message.edit_text(
+            f"📁 {cat[0]}\n\n😕 В этой категории пока нет товаров",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔙 К категориям", callback_data="back_cats")]
+            ])
+        )
+        await callback.answer()
+        return
+    
+    await callback.message.edit_text(
+        f"📁 {cat[0]}\n\nВыберите товар:",
+        reply_markup=get_products_by_category_inline(category_id)
+    )
     await callback.answer()
 
 @dp.callback_query_handler(lambda c: c.data == "back_cats")
 async def back_to_categories(callback: CallbackQuery):
-    await callback.message.edit_text("📁 Выберите категорию:", reply_markup=get_categories_inline())
+    await callback.message.edit_text(
+        "📁 Выберите категорию:",
+        reply_markup=get_categories_inline()
+    )
     await callback.answer()
 
-# === ТОВАРЫ ===
+# === ОБРАБОТКА ТОВАРОВ ===
 @dp.callback_query_handler(lambda c: c.data.startswith('prod_'))
 async def show_product(callback: CallbackQuery):
     prod_id = int(callback.data.split('_')[1])
@@ -566,7 +864,15 @@ async def show_product(callback: CallbackQuery):
         await callback.answer("Товар не найден")
         return
     
-    text = f"🎮 {prod[0]}\n\n📝 {prod[1]}\n\n💰 {prod[2]} руб."
+    text = (
+        f"╭─────────────────────────────╮\n"
+        f"│       🎮 {prod[0]}          \n"
+        f"├─────────────────────────────┤\n"
+        f"│  📝 {prod[1]}\n"
+        f"│                              \n"
+        f"│  💰 Цена: {prod[2]} руб.    \n"
+        f"╰─────────────────────────────╯"
+    )
     
     await callback.message.edit_text(text, reply_markup=get_product_actions(prod_id))
     await callback.answer()
@@ -597,16 +903,20 @@ async def buy_product(callback: CallbackQuery):
     
     pay_url = f"https://yoomoney.ru/to/{YOOMONEY_WALLET}?amount={prod[1]}&comment={label}"
     
+    payment_text = get_text('payment', 
+                          order_id=order_id,
+                          product_name=prod[0],
+                          price=prod[1])
+    
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить", url=pay_url)],
         [InlineKeyboardButton(text="✅ Я оплатил", callback_data=f"chk_{order_id}")]
     ])
     
-    await callback.message.edit_text(get_text('payment', order_id=order_id, product_name=prod[0], price=prod[1]),
-                                     reply_markup=keyboard)
+    await callback.message.edit_text(payment_text, reply_markup=keyboard)
     await callback.answer()
 
-# === ПРОВЕРКА ОПЛАТЫ (ЧЕРЕЗ HTTP-УВЕДОМЛЕНИЯ) ===
+# === НОВАЯ ПРОВЕРКА ОПЛАТЫ (С УВЕДОМЛЕНИЕМ АДМИНА) ===
 @dp.callback_query_handler(lambda c: c.data.startswith('chk_'))
 async def check_payment(callback: CallbackQuery):
     order_id = int(callback.data.split('_')[1])
@@ -614,9 +924,10 @@ async def check_payment(callback: CallbackQuery):
     conn = sqlite3.connect('shop.db')
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT o.status, o.user_id, p.file_url, p.name, o.amount 
+        SELECT o.status, o.user_id, o.label, p.file_url, p.name, o.amount, u.username
         FROM orders o
         JOIN products p ON o.product_id = p.id
+        JOIN users u ON o.user_id = u.user_id
         WHERE o.id = ?
     ''', (order_id,))
     result = cursor.fetchone()
@@ -626,35 +937,269 @@ async def check_payment(callback: CallbackQuery):
         await callback.answer("❌ Заказ не найден", show_alert=True)
         return
     
-    status, user_id, file_url, product_name, amount = result
+    status, user_id, label, file_url, product_name, amount, username = result
     
+    # Если заказ уже оплачен
     if status == 'paid':
-        # Уже оплачено
         review_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📬 Написать отзыв @inlezz", url="https://t.me/inlezz")]
         ])
-        await callback.message.edit_text(get_text('success', file_url=file_url or "Ссылка появится позже"),
-                                         reply_markup=review_keyboard)
-        conn.close()
+        await callback.message.edit_text(
+            get_text('success', file_url=file_url or "Ссылка появится позже"),
+            reply_markup=review_keyboard
+        )
         await callback.answer("✅ Заказ уже оплачен!", show_alert=True)
+        conn.close()
         return
     
-    # Если не оплачено, просим подождать
-    await callback.answer(
-        "⏳ Платёж ещё не прошёл. Обычно это занимает 1-2 минуты.\n"
-        "Если оплатили и не прошло 5 минут — напишите @inlezz",
-        show_alert=True
-    )
+    # Проверяем, уведомляли ли уже админов об этом заказе
+    cursor.execute("SELECT admin_notified FROM orders WHERE id = ?", (order_id,))
+    admin_notified = cursor.fetchone()[0]
     conn.close()
+    
+    if admin_notified == 0:
+        # Отмечаем, что уведомление отправлено
+        conn = sqlite3.connect('shop.db')
+        cursor = conn.cursor()
+        cursor.execute("UPDATE orders SET admin_notified = 1 WHERE id = ?", (order_id,))
+        conn.commit()
+        conn.close()
+        
+        # Отправляем уведомление ВСЕМ админам
+        pay_url = f"https://yoomoney.ru/to/{YOOMONEY_WALLET}?amount={amount}&comment={label}"
+        
+        for admin_id in ADMIN_IDS:
+            try:
+                admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"confirm_{order_id}")],
+                    [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"cancel_{order_id}")],
+                    [InlineKeyboardButton(text="🔍 Проверить в ЮMoney", url=pay_url)]
+                ])
+                
+                await bot.send_message(
+                    admin_id,
+                    f"💰 **ЗАПРОС НА ПОДТВЕРЖДЕНИЕ ОПЛАТЫ**\n\n"
+                    f"Заказ #{order_id}\n"
+                    f"Пользователь: @{username or 'нет'}\n"
+                    f"Товар: {product_name}\n"
+                    f"Сумма: {amount} руб.\n"
+                    f"Метка: {label}\n\n"
+                    f"Проверьте поступление денег и подтвердите заказ:",
+                    reply_markup=admin_keyboard,
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                print(f"Ошибка отправки админу {admin_id}: {e}")
+        
+        await callback.answer("✅ Запрос отправлен администратору. Ожидайте подтверждения.", show_alert=True)
+    else:
+        await callback.answer(
+            "⏳ Запрос уже отправлен администратору. Ожидайте подтверждения.",
+            show_alert=True
+        )
 
-# === ОБРАБОТЧИК ДЛЯ УВЕДОМЛЕНИЙ ОТ ЮMONEY ===
+# === ПОДТВЕРЖДЕНИЕ ЗАКАЗА АДМИНОМ ===
+@dp.callback_query_handler(lambda c: c.data.startswith('confirm_'))
+async def confirm_order(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔️ Нет доступа", show_alert=True)
+        return
+    
+    order_id = int(callback.data.split('_')[1])
+    
+    conn = sqlite3.connect('shop.db')
+    cursor = conn.cursor()
+    
+    # Получаем информацию о заказе
+    cursor.execute('''
+        SELECT o.user_id, p.file_url, p.name, o.amount
+        FROM orders o
+        JOIN products p ON o.product_id = p.id
+        WHERE o.id = ?
+    ''', (order_id,))
+    order = cursor.fetchone()
+    
+    if not order:
+        await callback.answer("❌ Заказ не найден", show_alert=True)
+        conn.close()
+        return
+    
+    user_id, file_url, product_name, amount = order
+    
+    # Отмечаем заказ как оплаченный
+    cursor.execute(
+        "UPDATE orders SET status = 'paid', paid_at = ? WHERE id = ?",
+        (str(datetime.now()), order_id)
+    )
+    conn.commit()
+    conn.close()
+    
+    # Отправляем товар пользователю
+    review_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📬 Написать отзыв @inlezz", url="https://t.me/inlezz")]
+    ])
+    
+    try:
+        await bot.send_message(
+            user_id,
+            get_text('success', file_url=file_url or "Ссылка появится позже"),
+            reply_markup=review_keyboard
+        )
+    except Exception as e:
+        print(f"Ошибка отправки пользователю {user_id}: {e}")
+    
+    # Сообщаем админу об успехе
+    await callback.message.edit_text(
+        f"✅ Заказ #{order_id} подтвержден!\n"
+        f"Товар отправлен пользователю."
+    )
+    await callback.answer("✅ Заказ подтвержден", show_alert=True)
+
+# === ОТМЕНА ЗАКАЗА АДМИНОМ ===
+@dp.callback_query_handler(lambda c: c.data.startswith('cancel_'))
+async def cancel_order(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔️ Нет доступа", show_alert=True)
+        return
+    
+    order_id = int(callback.data.split('_')[1])
+    
+    conn = sqlite3.connect('shop.db')
+    cursor = conn.cursor()
+    
+    # Получаем информацию о заказе
+    cursor.execute('''
+        SELECT o.user_id, p.name, o.amount
+        FROM orders o
+        JOIN products p ON o.product_id = p.id
+        WHERE o.id = ?
+    ''', (order_id,))
+    order = cursor.fetchone()
+    
+    if not order:
+        await callback.answer("❌ Заказ не найден", show_alert=True)
+        conn.close()
+        return
+    
+    user_id, product_name, amount = order
+    
+    # Отмечаем заказ как отмененный
+    cursor.execute(
+        "UPDATE orders SET status = 'cancelled' WHERE id = ?",
+        (order_id,)
+    )
+    conn.commit()
+    conn.close()
+    
+    # Уведомляем пользователя об отмене
+    try:
+        await bot.send_message(
+            user_id,
+            f"❌ Заказ #{order_id} отменен администратором.\n"
+            f"Товар: {product_name}\n"
+            f"Сумма: {amount} руб.\n\n"
+            f"Если вы оплатили, свяжитесь с @inlezz"
+        )
+    except Exception as e:
+        print(f"Ошибка отправки пользователю {user_id}: {e}")
+    
+    # Сообщаем админу
+    await callback.message.edit_text(
+        f"❌ Заказ #{order_id} отменен.\n"
+        f"Пользователь уведомлен."
+    )
+    await callback.answer("❌ Заказ отменен", show_alert=True)
+
+# === УДАЛЕНИЕ КАТЕГОРИИ (ОБРАБОТКА) ===
+@dp.callback_query_handler(lambda c: c.data.startswith('delcat_'))
+async def delete_category(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔️ Нет доступа", show_alert=True)
+        return
+    
+    cat_id = int(callback.data.split('_')[1])
+    
+    conn = sqlite3.connect('shop.db')
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM products WHERE category_id = ?", (cat_id,))
+    count = cursor.fetchone()[0]
+    
+    if count > 0:
+        await callback.answer("❌ Сначала удалите все товары в этой категории!", show_alert=True)
+        conn.close()
+        return
+    
+    cursor.execute("DELETE FROM categories WHERE id = ?", (cat_id,))
+    conn.commit()
+    conn.close()
+    
+    await callback.answer("✅ Категория удалена", show_alert=True)
+    
+    conn = sqlite3.connect('shop.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name FROM categories ORDER BY created_at DESC")
+    categories = cursor.fetchall()
+    conn.close()
+    
+    if categories:
+        await callback.message.edit_text(
+            "Выберите категорию для удаления:",
+            reply_markup=get_admin_categories_inline()
+        )
+    else:
+        await callback.message.edit_text("📭 Категорий нет")
+
+# === УДАЛЕНИЕ ТОВАРА (ОБРАБОТКА) ===
+@dp.callback_query_handler(lambda c: c.data.startswith('delprod_'))
+async def delete_product(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔️ Нет доступа", show_alert=True)
+        return
+    
+    prod_id = int(callback.data.split('_')[1])
+    
+    conn = sqlite3.connect('shop.db')
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM products WHERE id = ?", (prod_id,))
+    conn.commit()
+    conn.close()
+    
+    await callback.answer("✅ Товар удален", show_alert=True)
+    
+    conn = sqlite3.connect('shop.db')
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT p.id, p.name, c.name 
+        FROM products p
+        JOIN categories c ON p.category_id = c.id
+        ORDER BY p.created_at DESC
+    """)
+    products = cursor.fetchall()
+    conn.close()
+    
+    if products:
+        await callback.message.edit_text(
+            "🗑 Выберите товар для удаления:",
+            reply_markup=get_admin_products_inline()
+        )
+    else:
+        await callback.message.edit_text("📭 Товаров нет")
+
+# === ВОЗВРАТ В АДМИНКУ ===
+@dp.callback_query_handler(lambda c: c.data == "back_adm")
+async def back_to_admin(callback: CallbackQuery):
+    await callback.message.delete()
+    await callback.message.answer("⚙️ Админ-панель:", reply_markup=get_admin_keyboard())
+    await callback.answer()
+
+# === ОБРАБОТЧИК ДЛЯ УВЕДОМЛЕНИЙ ОТ ЮMONEY (ОПЦИОНАЛЬНО) ===
 @app.route('/webhook', methods=['POST'])
 def yoomoney_webhook():
     """Принимает уведомления от ЮMoney об оплате"""
     data = request.form
     label = data.get('label')
     amount = data.get('amount')
-    notification_type = data.get('notification_type')
     
     print(f"📩 Получено уведомление от ЮMoney: label={label}, amount={amount}")
     
@@ -672,6 +1217,30 @@ def yoomoney_webhook():
             
             if cursor.rowcount > 0:
                 print(f"✅ Заказ {label} оплачен и подтверждён!")
+                
+                # Отправляем товар пользователю
+                cursor.execute('''
+                    SELECT o.user_id, p.file_url
+                    FROM orders o
+                    JOIN products p ON o.product_id = p.id
+                    WHERE o.label = ?
+                ''', (label,))
+                result = cursor.fetchone()
+                
+                if result:
+                    user_id, file_url = result
+                    review_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="📬 Написать отзыв @inlezz", url="https://t.me/inlezz")]
+                    ])
+                    
+                    asyncio.run_coroutine_threadsafe(
+                        bot.send_message(
+                            user_id,
+                            get_text('success', file_url=file_url or "Ссылка появится позже"),
+                            reply_markup=review_keyboard
+                        ),
+                        asyncio.get_event_loop()
+                    )
             else:
                 print(f"⚠️ Заказ {label} не найден или уже оплачен")
             
@@ -683,62 +1252,19 @@ def yoomoney_webhook():
     
     return "OK", 200
 
-# === ВОЗВРАТ В АДМИНКУ ===
-@dp.callback_query_handler(lambda c: c.data == "back_adm")
-async def back_to_admin(callback: CallbackQuery):
-    await callback.message.delete()
-    await callback.message.answer("⚙️ Админ-панель:", reply_markup=get_admin_keyboard())
-    await callback.answer()
-
-# === УДАЛЕНИЕ ===
-@dp.callback_query_handler(lambda c: c.data.startswith('delcat_'))
-async def delete_category(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔️ Нет доступа", show_alert=True)
-        return
-    
-    cat_id = int(callback.data.split('_')[1])
-    
-    conn = sqlite3.connect('shop.db')
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM categories WHERE id = ?", (cat_id,))
-    conn.commit()
-    conn.close()
-    
-    await callback.answer("✅ Категория удалена", show_alert=True)
-    await callback.message.edit_text("Выберите категорию для удаления:", reply_markup=get_admin_categories_inline())
-
-@dp.callback_query_handler(lambda c: c.data.startswith('delprod_'))
-async def delete_product(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔️ Нет доступа", show_alert=True)
-        return
-    
-    prod_id = int(callback.data.split('_')[1])
-    
-    conn = sqlite3.connect('shop.db')
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM products WHERE id = ?", (prod_id,))
-    conn.commit()
-    conn.close()
-    
-    await callback.answer("✅ Товар удален", show_alert=True)
-    await callback.message.edit_text("Выберите товар для удаления:", reply_markup=get_admin_products_inline())
-
 # === ЗАПУСК ДЛЯ RAILWAY ===
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 8080))
     
     # Функция, которая выполнится при старте
     async def on_startup(dispatcher):
-        # Получаем домен из переменных окружения или используем Railway домен
         railway_domain = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'neverlate-bot-production.up.railway.app')
         webhook_url = f"https://{railway_domain}/webhook"
         
         await bot.set_webhook(webhook_url)
         print(f"✅ Вебхук установлен на {webhook_url}")
         print("✅ Бот запущен на Railway!")
-        print("✅ HTTP-уведомления ЮMoney настроены")
+        print(f"✅ Админы: {ADMIN_IDS}")
     
     start_webhook(
         dispatcher=dp,
