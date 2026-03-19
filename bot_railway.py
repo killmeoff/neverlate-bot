@@ -11,9 +11,9 @@ from aiogram.dispatcher.filters import Command
 from aiogram.utils.executor import start_webhook
 
 # === ТВОИ ДАННЫЕ (Railway подставит их сам) ===
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8648419642:AAHu30-ZDe7vuP2ABYnU7aGm6ZuQnR-4HEc")
-YOOMONEY_WALLET = os.environ.get("YOOMONEY_WALLET", "4100119317511409")
-ADMIN_IDS = [int(id) for id in os.environ.get("ADMIN_IDS", "8356579532").split(",")]
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+YOOMONEY_WALLET = os.environ.get("YOOMONEY_WALLET")
+ADMIN_IDS = [int(id) for id in os.environ.get("ADMIN_IDS", "").split(",") if id]
 SHOP_NAME = "NEVERLATE"
 
 # === НАСТРОЙКИ ===
