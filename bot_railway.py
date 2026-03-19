@@ -3,7 +3,6 @@ import sqlite3
 import logging
 import os
 from datetime import datetime
-from flask import Flask, request
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.dispatcher import Dispatcher
@@ -20,6 +19,9 @@ SHOP_NAME = "NEVERLATE"
 logging.basicConfig(level=logging.INFO)
 
 # === ИНИЦИАЛИЗАЦИЯ ===
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN не найден! Добавь его в Variables на Railway")
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
@@ -81,7 +83,6 @@ def init_db():
     
     conn.commit()
     
-    # Тексты по умолчанию
     default_texts = {
         'welcome': (
             "╭━━━━━━━━━━━━━━━━━━╮\n"
@@ -677,13 +678,20 @@ async def back_to_admin(callback: CallbackQuery):
     await callback.message.answer("⚙️ Админ-панель:", reply_markup=get_admin_keyboard())
     await callback.answer()
 
-# === ЗАПУСК ДЛЯ RAILWAY ===
+# === ЗАПУСК ДЛЯ RAILWAY (ИСПРАВЛЕНО) ===
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 8080))
+    
+    # Функция, которая выполнится при старте
+    async def on_startup(dispatcher):
+        await bot.set_webhook(f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'neverlate-bot.up.railway.app')}/webhook")
+        print("✅ Вебхук установлен")
+        print("✅ Бот запущен на Railway!")
+    
     start_webhook(
         dispatcher=dp,
-        webhook_path="",
-        on_startup=lambda _: print("✅ Бот запущен на Railway!"),
+        webhook_path="/webhook",
+        on_startup=on_startup,
         host="0.0.0.0",
         port=PORT
     )
