@@ -8,10 +8,12 @@ from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardB
 from aiogram.dispatcher import Dispatcher
 from aiogram.dispatcher.filters import Command
 from aiogram.utils.executor import start_webhook
+from yoomoney import Client  # Добавлено для работы с ЮMoney
 
 # === ТВОИ ДАННЫЕ (Railway подставит их сам) ===
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 YOOMONEY_WALLET = os.environ.get("YOOMONEY_WALLET")
+YOOMONEY_TOKEN = os.environ.get("YOOMONEY_TOKEN")  # Токен для API ЮMoney
 ADMIN_IDS = [int(id) for id in os.environ.get("ADMIN_IDS", "").split(",") if id]
 SHOP_NAME = "NEVERLATE"
 
@@ -603,7 +605,7 @@ async def buy_product(callback: CallbackQuery):
                                      reply_markup=keyboard)
     await callback.answer()
 
-# === ПРОВЕРКА ОПЛАТЫ ===
+# === ПРОВЕРКА ОПЛАТЫ (АВТОМАТИЧЕСКАЯ) ===
 @dp.callback_query_handler(lambda c: c.data.startswith('chk_'))
 async def check_payment(callback: CallbackQuery):
     order_id = int(callback.data.split('_')[1])
@@ -611,7 +613,7 @@ async def check_payment(callback: CallbackQuery):
     conn = sqlite3.connect('shop.db')
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT o.status, o.user_id, p.file_url 
+        SELECT o.status, o.user_id, o.label, p.file_url, p.name, o.amount 
         FROM orders o
         JOIN products p ON o.product_id = p.id
         WHERE o.id = ?
@@ -623,8 +625,9 @@ async def check_payment(callback: CallbackQuery):
         await callback.answer("❌ Заказ не найден", show_alert=True)
         return
     
-    status, user_id, file_url = result
+    status, user_id, label, file_url, product_name, amount = result
     
+    # Если уже оплачен
     if status == 'paid':
         review_keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📬 Написать отзыв @inlezz", url="https://t.me/inlezz")]
@@ -634,7 +637,51 @@ async def check_payment(callback: CallbackQuery):
         conn.close()
         return
     
-    await callback.answer("❌ Платёж не найден", show_alert=True)
+    # АВТОМАТИЧЕСКАЯ ПРОВЕРКА ЧЕРЕЗ API ЮMONEY
+    try:
+        # Ждем немного, чтобы платеж успел обработаться
+        await asyncio.sleep(3)
+        
+        # Проверяем через API
+        client = Client(YOOMONEY_TOKEN)
+        history = client.operation_history(label=label)
+        
+        for operation in history.operations:
+            if operation.status == "success":
+                # Платеж найден! Отмечаем заказ как оплаченный
+                cursor.execute(
+                    "UPDATE orders SET status = 'paid', paid_at = ? WHERE id = ?",
+                    (str(datetime.now()), order_id)
+                )
+                conn.commit()
+                
+                # Отправляем товар
+                review_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📬 Написать отзыв @inlezz", url="https://t.me/inlezz")]
+                ])
+                
+                await callback.message.edit_text(
+                    get_text('success', file_url=file_url or "Ссылка появится позже"),
+                    reply_markup=review_keyboard
+                )
+                
+                conn.close()
+                await callback.answer("✅ Оплата подтверждена!", show_alert=True)
+                return
+        
+        # Если дошли сюда — платеж не найден
+        await callback.answer(
+            "❌ Платёж не найден. Если вы оплатили, подождите немного и нажмите снова.",
+            show_alert=True
+        )
+        
+    except Exception as e:
+        print(f"Ошибка при проверке платежа: {e}")
+        await callback.answer(
+            "❌ Ошибка при проверке. Попробуйте позже или напишите @inlezz",
+            show_alert=True
+        )
+    
     conn.close()
 
 # === УДАЛЕНИЕ ===
@@ -678,15 +725,25 @@ async def back_to_admin(callback: CallbackQuery):
     await callback.message.answer("⚙️ Админ-панель:", reply_markup=get_admin_keyboard())
     await callback.answer()
 
-# === ЗАПУСК ДЛЯ RAILWAY (ИСПРАВЛЕНО) ===
+# === ЗАПУСК ДЛЯ RAILWAY ===
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 8080))
     
     # Функция, которая выполнится при старте
     async def on_startup(dispatcher):
-        await bot.set_webhook(f"https://{os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'neverlate-bot.up.railway.app')}/webhook")
-        print("✅ Вебхук установлен")
+        # Получаем домен из переменных окружения или используем Railway домен
+        railway_domain = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'neverlate-bot-production.up.railway.app')
+        webhook_url = f"https://{railway_domain}/webhook"
+        
+        await bot.set_webhook(webhook_url)
+        print(f"✅ Вебхук установлен на {webhook_url}")
         print("✅ Бот запущен на Railway!")
+        
+        # Проверяем наличие токена ЮMoney
+        if YOOMONEY_TOKEN:
+            print("✅ Токен ЮMoney найден")
+        else:
+            print("⚠️ Токен ЮMoney не найден. Добавь YOOMONEY_TOKEN в Variables для автоматической проверки оплаты")
     
     start_webhook(
         dispatcher=dp,
