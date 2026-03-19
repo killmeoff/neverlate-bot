@@ -1009,83 +1009,130 @@ async def buy_product(callback: CallbackQuery):
 # === ПРОВЕРКА ОПЛАТЫ (ТОЛЬКО РУЧНОЕ ПОДТВЕРЖДЕНИЕ) ===
 @dp.callback_query_handler(lambda c: c.data.startswith('chk_'))
 async def check_payment(callback: CallbackQuery):
-    order_id = int(callback.data.split('_')[1])
+    print(f"🔍 Получен callback: {callback.data}")
+    print(f"🔍 От пользователя: {callback.from_user.id}")
     
-    conn = sqlite3.connect('shop.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT o.status, o.user_id, o.label, p.file_url, p.name, o.amount, u.username
-        FROM orders o
-        JOIN products p ON o.product_id = p.id
-        JOIN users u ON o.user_id = u.user_id
-        WHERE o.id = ?
-    ''', (order_id,))
-    result = cursor.fetchone()
-    
-    if not result:
-        conn.close()
-        await callback.answer("❌ Заказ не найден", show_alert=True)
+    try:
+        order_id = int(callback.data.split('_')[1])
+        print(f"🔍 ID заказа: {order_id}")
+    except (IndexError, ValueError) as e:
+        print(f"❌ Ошибка парсинга order_id: {e}")
+        await callback.answer("❌ Ошибка в данных заказа", show_alert=True)
         return
     
-    status, user_id, label, file_url, product_name, amount, username = result
-    
-    # Если заказ уже оплачен
-    if status == 'paid':
-        review_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📬 Написать отзыв @inlezz", url="https://t.me/inlezz")]
-        ])
-        await callback.message.edit_text(
-            get_text('success', file_url=file_url or "Ссылка появится позже"),
-            reply_markup=review_keyboard
-        )
-        await callback.answer("✅ Заказ уже оплачен!", show_alert=True)
-        conn.close()
-        return
-    
-    # Проверяем, уведомляли ли уже админов об этом заказе
-    cursor.execute("SELECT admin_notified FROM orders WHERE id = ?", (order_id,))
-    admin_notified = cursor.fetchone()[0]
-    
-    if admin_notified == 0:
-        # Отмечаем, что уведомление отправлено
-        cursor.execute("UPDATE orders SET admin_notified = 1 WHERE id = ?", (order_id,))
-        conn.commit()
+    conn = None
+    try:
+        conn = sqlite3.connect('shop.db')
+        cursor = conn.cursor()
         
-        # Ссылка на ЮMoney для проверки
-        pay_url = f"https://yoomoney.ru/to/{YOOMONEY_WALLET}?amount={amount}&comment={label}"
+        # Проверяем, есть ли вообще такой заказ
+        cursor.execute('SELECT COUNT(*) FROM orders WHERE id = ?', (order_id,))
+        count = cursor.fetchone()[0]
+        print(f"🔍 Заказов с ID {order_id}: {count}")
         
-        # Отправляем уведомление ВСЕМ админам
-        for admin_id in ADMIN_IDS:
-            try:
-                admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"confirm_{order_id}")],
-                    [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"cancel_{order_id}")],
-                    [InlineKeyboardButton(text="🔍 Проверить в ЮMoney", url=pay_url)]
-                ])
-                
-                await bot.send_message(
-                    admin_id,
-                    f"💰 **ЗАПРОС НА ПОДТВЕРЖДЕНИЕ ОПЛАТЫ**\n\n"
-                    f"Заказ #{order_id}\n"
-                    f"Пользователь: @{username or 'нет'}\n"
-                    f"Товар: {product_name}\n"
-                    f"Сумма: {amount} руб.\n"
-                    f"Метка: `{label}`\n\n"
-                    f"Проверьте поступление денег и подтвердите заказ:",
-                    reply_markup=admin_keyboard,
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                print(f"Ошибка отправки админу {admin_id}: {e}")
+        if count == 0:
+            await callback.answer(f"❌ Заказ #{order_id} не найден в базе", show_alert=True)
+            conn.close()
+            return
         
-        await callback.answer("✅ Запрос отправлен администратору. Ожидайте подтверждения.", show_alert=True)
-    else:
-        await callback.answer(
-            "⏳ Запрос уже отправлен администратору. Ожидайте подтверждения.",
-            show_alert=True
-        )
+        # Получаем полную информацию о заказе
+        cursor.execute('''
+            SELECT o.status, o.user_id, o.label, p.file_url, p.name, o.amount, u.username
+            FROM orders o
+            JOIN products p ON o.product_id = p.id
+            JOIN users u ON o.user_id = u.user_id
+            WHERE o.id = ?
+        ''', (order_id,))
+        result = cursor.fetchone()
+        
+        if not result:
+            print(f"❌ Заказ #{order_id} найден, но нет связанных данных")
+            await callback.answer("❌ Ошибка получения данных заказа", show_alert=True)
+            conn.close()
+            return
+        
+        status, user_id, label, file_url, product_name, amount, username = result
+        print(f"🔍 Статус заказа: {status}")
+        print(f"🔍 User ID заказа: {user_id}")
+        print(f"🔍 Текущий пользователь: {callback.from_user.id}")
+        
+        # Проверяем, что пользователь подтверждает свой заказ
+        if user_id != callback.from_user.id:
+            print(f"❌ Попытка подтвердить чужой заказ!")
+            await callback.answer("❌ Это не ваш заказ!", show_alert=True)
+            conn.close()
+            return
+        
+        # Если заказ уже оплачен
+        if status == 'paid':
+            review_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📬 Написать отзыв @inlezz", url="https://t.me/inlezz")]
+            ])
+            await callback.message.edit_text(
+                get_text('success', file_url=file_url or "Ссылка появится позже"),
+                reply_markup=review_keyboard
+            )
+            await callback.answer("✅ Заказ уже оплачен!", show_alert=True)
+            conn.close()
+            return
+        
+        # Проверяем, уведомляли ли уже админов об этом заказе
+        cursor.execute("SELECT admin_notified FROM orders WHERE id = ?", (order_id,))
+        admin_notified = cursor.fetchone()[0]
+        print(f"🔍 Admin notified: {admin_notified}")
+        
+        if admin_notified == 0:
+            # Отмечаем, что уведомление отправлено
+            cursor.execute("UPDATE orders SET admin_notified = 1 WHERE id = ?", (order_id,))
+            conn.commit()
+            print(f"✅ Отметили заказ #{order_id} как уведомленный")
+            
+            # Ссылка на ЮMoney для проверки
+            pay_url = f"https://yoomoney.ru/to/{YOOMONEY_WALLET}?amount={amount}&comment={label}"
+            
+            # Отправляем уведомление ВСЕМ админам
+            admin_notified_count = 0
+            for admin_id in ADMIN_IDS:
+                try:
+                    admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"confirm_{order_id}")],
+                        [InlineKeyboardButton(text="❌ Отменить заказ", callback_data=f"cancel_{order_id}")],
+                        [InlineKeyboardButton(text="🔍 Проверить в ЮMoney", url=pay_url)]
+                    ])
+                    
+                    await bot.send_message(
+                        admin_id,
+                        f"💰 **ЗАПРОС НА ПОДТВЕРЖДЕНИЕ ОПЛАТЫ**\n\n"
+                        f"Заказ #{order_id}\n"
+                        f"Пользователь: @{username or 'нет'}\n"
+                        f"Товар: {product_name}\n"
+                        f"Сумма: {amount} руб.\n"
+                        f"Метка: `{label}`\n\n"
+                        f"Проверьте поступление денег и подтвердите заказ:",
+                        reply_markup=admin_keyboard,
+                        parse_mode="Markdown"
+                    )
+                    admin_notified_count += 1
+                except Exception as e:
+                    print(f"❌ Ошибка отправки админу {admin_id}: {e}")
+            
+            print(f"✅ Уведомления отправлены {admin_notified_count} админам")
+            await callback.answer("✅ Запрос отправлен администратору. Ожидайте подтверждения.", show_alert=True)
+        else:
+            await callback.answer(
+                "⏳ Запрос уже отправлен администратору. Ожидайте подтверждения.",
+                show_alert=True
+            )
     
-    conn.close()
+    except sqlite3.Error as e:
+        print(f"❌ Ошибка базы данных: {e}")
+        await callback.answer("❌ Ошибка базы данных", show_alert=True)
+    except Exception as e:
+        print(f"❌ Непредвиденная ошибка: {e}")
+        await callback.answer("❌ Произошла ошибка", show_alert=True)
+    finally:
+        if conn:
+            conn.close()
 
 # === ПОДТВЕРЖДЕНИЕ ЗАКАЗА АДМИНОМ ===
 @dp.callback_query_handler(lambda c: c.data.startswith('confirm_'))
@@ -1095,6 +1142,7 @@ async def confirm_order(callback: CallbackQuery):
         return
     
     order_id = int(callback.data.split('_')[1])
+    print(f"✅ Админ {callback.from_user.id} подтверждает заказ #{order_id}")
     
     conn = sqlite3.connect('shop.db')
     cursor = conn.cursor()
@@ -1134,8 +1182,9 @@ async def confirm_order(callback: CallbackQuery):
             get_text('success', file_url=file_url or "Ссылка появится позже"),
             reply_markup=review_keyboard
         )
+        print(f"✅ Товар отправлен пользователю {user_id}")
     except Exception as e:
-        print(f"Ошибка отправки пользователю {user_id}: {e}")
+        print(f"❌ Ошибка отправки пользователю {user_id}: {e}")
     
     # Сообщаем админу об успехе
     await callback.message.edit_text(
@@ -1152,6 +1201,7 @@ async def cancel_order(callback: CallbackQuery):
         return
     
     order_id = int(callback.data.split('_')[1])
+    print(f"❌ Админ {callback.from_user.id} отменяет заказ #{order_id}")
     
     conn = sqlite3.connect('shop.db')
     cursor = conn.cursor()
@@ -1186,8 +1236,9 @@ async def cancel_order(callback: CallbackQuery):
             user_id,
             get_text('cancel', order_id=order_id, product_name=product_name, price=amount)
         )
+        print(f"✅ Уведомление об отмене отправлено пользователю {user_id}")
     except Exception as e:
-        print(f"Ошибка отправки пользователю {user_id}: {e}")
+        print(f"❌ Ошибка отправки пользователю {user_id}: {e}")
     
     # Сообщаем админу
     await callback.message.edit_text(
@@ -1204,6 +1255,7 @@ async def delete_category(callback: CallbackQuery):
         return
     
     cat_id = int(callback.data.split('_')[1])
+    print(f"🗑 Админ {callback.from_user.id} удаляет категорию #{cat_id}")
     
     conn = sqlite3.connect('shop.db')
     cursor = conn.cursor()
@@ -1245,6 +1297,7 @@ async def delete_product(callback: CallbackQuery):
         return
     
     prod_id = int(callback.data.split('_')[1])
+    print(f"🗑 Админ {callback.from_user.id} удаляет товар #{prod_id}")
     
     conn = sqlite3.connect('shop.db')
     cursor = conn.cursor()
