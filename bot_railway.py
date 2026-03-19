@@ -127,12 +127,17 @@ def init_db():
             "Йо, бро 👋\n"
             "Хочешь конфиги, которые реально вывозят?\n"
             "Тогда ты там где надо.\n\n"
+            "▸ Разные читы\n"
+            "▸ Оптимизация\n"
+            "▸ Никаких читов — только настройки\n"
+            "▸ Обновляю под каждый патч\n\n"
             "📌 **Как забрать:**\n"
             "👉 Жми **«🛍 Каталог»**\n"
             "👉 Выбирай свой софт\n"
             "👉 Плати через ЮMoney\n"
-            "👉 Пользуйся 💪\n\n"
-            "📸 **Отзывы тут:** @reviewsneverlate"
+            "👉 Нажми «✅ Я оплатил» и жди подтверждения\n\n"
+            "📸 **Отзывы тут:** @reviewsneverlate\n\n"
+            "Погнали? 👇"
         ),
         'payment': (
             "╭─────────────────────────────╮\n"
@@ -143,8 +148,12 @@ def init_db():
             "│  💰 **Сумма:** {price} руб.\n"
             "├─────────────────────────────┤\n"
             "│  💳 **Оплата:**\n"
-            "│  ⚡️ Жми «Оплатить»\n"
-            "│  ✅ Вернись и нажми «Я оплатил»\n"
+            "│  1. Жми «💳 Оплатить»\n"
+            "│  2. Переведи деньги\n"
+            "│  3. Вернись и нажми «✅ Я оплатил»\n"
+            "├─────────────────────────────┤\n"
+            "│  ⏳ После оплаты админ проверит\n"
+            "│  и вышлет конфиг вручную\n"
             "╰─────────────────────────────╯"
         ),
         'success': (
@@ -154,7 +163,8 @@ def init_db():
             "│  🔥 Конфиг твой!\n"
             "│  Ссылка: {file_url}\n"
             "├─────────────────────────────┤\n"
-            "│  📸 **Отзыв:** @inlezz\n"
+            "│  📸 **Оставь отзыв:**\n"
+            "│  👉 Напиши @inlezz\n"
             "╰─────────────────────────────╯"
         ),
         'cancel': (
@@ -173,12 +183,21 @@ def init_db():
             "╔════════════════════════════╗\n"
             "║      🎮 NEVERLATE         ║\n"
             "╠════════════════════════════╣\n"
-            "║  Работаем честно 💯\n"
-            "║  📊 Заказов: {paid_orders}/{total_orders}\n"
-            "║  👥 Клиентов: {total_customers}\n"
-            "║  💰 Продано: {total_sales} руб.\n"
-            "║  🔥 Поможем с настройкой\n"
-            "║  📬 Вопросы: @inlezz\n"
+            "║  Мы — Neverlate.\n"
+            "║  Работаем честно и с душой 💯\n"
+            "║                            \n"
+            "║  📊 **Наша статистика:**\n"
+            "║  ├─ ✅ Заказов выполнено: {paid_orders}/{total_orders}\n"
+            "║  ├─ 👥 Довольных клиентов: {total_customers}\n"
+            "║  ╰─ 💰 Продано на: {total_sales} руб.\n"
+            "║                            \n"
+            "║  🔥 Поможем тебе:\n"
+            "║  • с настройкой конфигов\n"
+            "║  • с выбором софта\n"
+            "║  • с любыми вопросами\n"
+            "║                            \n"
+            "║  📬 Есть вопросы?\n"
+            "║  👇 Жми на кнопку ниже!\n"
             "╚════════════════════════════╝"
         )
     }
@@ -320,6 +339,7 @@ def get_texts_inline():
         [InlineKeyboardButton(text="📝 Приветствие", callback_data="edit_welcome")],
         [InlineKeyboardButton(text="💰 Сообщение об оплате", callback_data="edit_payment")],
         [InlineKeyboardButton(text="✅ Сообщение об успехе", callback_data="edit_success")],
+        [InlineKeyboardButton(text="❌ Сообщение об отмене", callback_data="edit_cancel")],
         [InlineKeyboardButton(text="ℹ️ О нас", callback_data="edit_about")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="back_adm")]
     ]
@@ -396,13 +416,31 @@ async def my_orders(message: Message):
         await message.answer("📭 У вас пока нет заказов")
         return
     
-    text = "📦 Ваши заказы:\n\n"
+    text = "╔════════════════════════════╗\n"
+    text += "║      📦 МОИ ЗАКАЗЫ        ║\n"
+    text += "╠════════════════════════════╣\n\n"
+    
     for o in orders:
-        status = "✅" if o[3] == "paid" else "⏳"
-        text += f"{status} Заказ #{o[0]}\n"
-        text += f"  Товар: {o[1]}\n"
-        text += f"  Сумма: {o[2]} руб.\n"
-        text += f"  Дата: {o[4][:16]}\n\n"
+        order_id = o[0]
+        product_name = o[1]
+        amount = o[2]
+        status = o[3]
+        date = o[4][:16]
+        
+        if status == 'paid':
+            status_text = "✅ ОПЛАЧЕН"
+            status_emoji = "✅"
+        else:
+            status_text = "⏳ ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ"
+            status_emoji = "⏳"
+        
+        text += f"  {status_emoji} Заказ #{order_id}\n"
+        text += f"  ├─ 🎮 Товар: {product_name}\n"
+        text += f"  ├─ 💰 Сумма: {amount} руб.\n"
+        text += f"  ├─ 📅 Дата: {date}\n"
+        text += f"  ╰─ 🔥 Статус: {status_text}\n\n"
+    
+    text += "╚════════════════════════════╝"
     
     await message.answer(text)
 
@@ -515,6 +553,7 @@ async def remove_admin_process(callback: CallbackQuery):
     else:
         await callback.answer("❌ Нельзя удалить главного админа", show_alert=True)
     
+    # Возвращаемся в меню управления админами
     text = "👥 **Управление администраторами**\n\n"
     text += f"👑 Главный админ: `{ADMIN_IDS[0]}`\n"
     text += "📋 Список админов:\n"
@@ -604,6 +643,57 @@ async def process_edit_text(message: Message):
         f"✅ Текст '{text_key}' обновлен!",
         reply_markup=get_admin_keyboard()
     )
+
+# === КОМАНДА РУЧНОГО ПОДТВЕРЖДЕНИЯ ===
+@dp.message_handler(lambda msg: msg.text and msg.text.startswith('/confirm'))
+async def manual_confirm(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    
+    try:
+        parts = message.text.split()
+        if len(parts) < 2:
+            await message.answer("Использование: /confirm [номер_заказа]")
+            return
+        
+        order_id = int(parts[1])
+        
+        conn = sqlite3.connect('shop.db')
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT o.user_id, o.amount, p.name, p.file_url 
+            FROM orders o
+            JOIN products p ON o.product_id = p.id
+            WHERE o.id = ?
+        ''', (order_id,))
+        order = cursor.fetchone()
+        
+        if not order:
+            await message.answer("❌ Заказ не найден")
+            conn.close()
+            return
+        
+        user_id, amount, product_name, file_url = order
+        
+        cursor.execute(
+            "UPDATE orders SET status = 'paid', paid_at = ? WHERE id = ?",
+            (str(datetime.now()), order_id)
+        )
+        conn.commit()
+        conn.close()
+        
+        success_text = get_text('success', file_url=file_url or "Ссылка появится позже")
+        
+        review_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📬 Написать отзыв @inlezz", url="https://t.me/inlezz")]
+        ])
+        
+        await bot.send_message(user_id, success_text, reply_markup=review_keyboard)
+        await message.answer(f"✅ Заказ #{order_id} подтвержден и отправлен пользователю")
+        
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
 
 # === СОЗДАНИЕ КАТЕГОРИИ ===
 cat_data = {}
@@ -916,7 +1006,7 @@ async def buy_product(callback: CallbackQuery):
     await callback.message.edit_text(payment_text, reply_markup=keyboard)
     await callback.answer()
 
-# === НОВАЯ ПРОВЕРКА ОПЛАТЫ (С УВЕДОМЛЕНИЕМ АДМИНА) ===
+# === ПРОВЕРКА ОПЛАТЫ (ТОЛЬКО РУЧНОЕ ПОДТВЕРЖДЕНИЕ) ===
 @dp.callback_query_handler(lambda c: c.data.startswith('chk_'))
 async def check_payment(callback: CallbackQuery):
     order_id = int(callback.data.split('_')[1])
@@ -955,19 +1045,16 @@ async def check_payment(callback: CallbackQuery):
     # Проверяем, уведомляли ли уже админов об этом заказе
     cursor.execute("SELECT admin_notified FROM orders WHERE id = ?", (order_id,))
     admin_notified = cursor.fetchone()[0]
-    conn.close()
     
     if admin_notified == 0:
         # Отмечаем, что уведомление отправлено
-        conn = sqlite3.connect('shop.db')
-        cursor = conn.cursor()
         cursor.execute("UPDATE orders SET admin_notified = 1 WHERE id = ?", (order_id,))
         conn.commit()
-        conn.close()
         
-        # Отправляем уведомление ВСЕМ админам
+        # Ссылка на ЮMoney для проверки
         pay_url = f"https://yoomoney.ru/to/{YOOMONEY_WALLET}?amount={amount}&comment={label}"
         
+        # Отправляем уведомление ВСЕМ админам
         for admin_id in ADMIN_IDS:
             try:
                 admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -983,7 +1070,7 @@ async def check_payment(callback: CallbackQuery):
                     f"Пользователь: @{username or 'нет'}\n"
                     f"Товар: {product_name}\n"
                     f"Сумма: {amount} руб.\n"
-                    f"Метка: {label}\n\n"
+                    f"Метка: `{label}`\n\n"
                     f"Проверьте поступление денег и подтвердите заказ:",
                     reply_markup=admin_keyboard,
                     parse_mode="Markdown"
@@ -997,6 +1084,8 @@ async def check_payment(callback: CallbackQuery):
             "⏳ Запрос уже отправлен администратору. Ожидайте подтверждения.",
             show_alert=True
         )
+    
+    conn.close()
 
 # === ПОДТВЕРЖДЕНИЕ ЗАКАЗА АДМИНОМ ===
 @dp.callback_query_handler(lambda c: c.data.startswith('confirm_'))
@@ -1095,10 +1184,7 @@ async def cancel_order(callback: CallbackQuery):
     try:
         await bot.send_message(
             user_id,
-            f"❌ Заказ #{order_id} отменен администратором.\n"
-            f"Товар: {product_name}\n"
-            f"Сумма: {amount} руб.\n\n"
-            f"Если вы оплатили, свяжитесь с @inlezz"
+            get_text('cancel', order_id=order_id, product_name=product_name, price=amount)
         )
     except Exception as e:
         print(f"Ошибка отправки пользователю {user_id}: {e}")
@@ -1136,6 +1222,7 @@ async def delete_category(callback: CallbackQuery):
     
     await callback.answer("✅ Категория удалена", show_alert=True)
     
+    # Обновляем список категорий
     conn = sqlite3.connect('shop.db')
     cursor = conn.cursor()
     cursor.execute("SELECT id, name FROM categories ORDER BY created_at DESC")
@@ -1167,6 +1254,7 @@ async def delete_product(callback: CallbackQuery):
     
     await callback.answer("✅ Товар удален", show_alert=True)
     
+    # Обновляем список товаров
     conn = sqlite3.connect('shop.db')
     cursor = conn.cursor()
     cursor.execute("""
@@ -1193,65 +1281,6 @@ async def back_to_admin(callback: CallbackQuery):
     await callback.message.answer("⚙️ Админ-панель:", reply_markup=get_admin_keyboard())
     await callback.answer()
 
-# === ОБРАБОТЧИК ДЛЯ УВЕДОМЛЕНИЙ ОТ ЮMONEY (ОПЦИОНАЛЬНО) ===
-@app.route('/webhook', methods=['POST'])
-def yoomoney_webhook():
-    """Принимает уведомления от ЮMoney об оплате"""
-    data = request.form
-    label = data.get('label')
-    amount = data.get('amount')
-    
-    print(f"📩 Получено уведомление от ЮMoney: label={label}, amount={amount}")
-    
-    if label and label.startswith('order_'):
-        try:
-            conn = sqlite3.connect('shop.db')
-            cursor = conn.cursor()
-            
-            # Отмечаем заказ как оплаченный
-            cursor.execute(
-                "UPDATE orders SET status = 'paid', paid_at = ? WHERE label = ? AND status = 'pending'",
-                (str(datetime.now()), label)
-            )
-            conn.commit()
-            
-            if cursor.rowcount > 0:
-                print(f"✅ Заказ {label} оплачен и подтверждён!")
-                
-                # Отправляем товар пользователю
-                cursor.execute('''
-                    SELECT o.user_id, p.file_url
-                    FROM orders o
-                    JOIN products p ON o.product_id = p.id
-                    WHERE o.label = ?
-                ''', (label,))
-                result = cursor.fetchone()
-                
-                if result:
-                    user_id, file_url = result
-                    review_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="📬 Написать отзыв @inlezz", url="https://t.me/inlezz")]
-                    ])
-                    
-                    asyncio.run_coroutine_threadsafe(
-                        bot.send_message(
-                            user_id,
-                            get_text('success', file_url=file_url or "Ссылка появится позже"),
-                            reply_markup=review_keyboard
-                        ),
-                        asyncio.get_event_loop()
-                    )
-            else:
-                print(f"⚠️ Заказ {label} не найден или уже оплачен")
-            
-            conn.close()
-            return "OK", 200
-        except Exception as e:
-            print(f"❌ Ошибка при обработке уведомления: {e}")
-            return "Internal Server Error", 500
-    
-    return "OK", 200
-
 # === ЗАПУСК ДЛЯ RAILWAY ===
 if __name__ == "__main__":
     PORT = int(os.environ.get("PORT", 8080))
@@ -1265,6 +1294,7 @@ if __name__ == "__main__":
         print(f"✅ Вебхук установлен на {webhook_url}")
         print("✅ Бот запущен на Railway!")
         print(f"✅ Админы: {ADMIN_IDS}")
+        print("✅ Режим: Ручное подтверждение заказов")
     
     start_webhook(
         dispatcher=dp,
