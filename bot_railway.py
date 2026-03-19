@@ -886,7 +886,7 @@ async def buy_product(callback: CallbackQuery):
                                      reply_markup=keyboard)
     await callback.answer()
 
-# === ПРОВЕРКА ОПЛАТЫ (УПРОЩЕННАЯ) ===
+# === ПРОВЕРКА ОПЛАТЫ (С ТВОИМ ТЕКСТОМ) ===
 @dp.callback_query_handler(lambda c: c.data.startswith('chk_'))
 async def check_payment(callback: CallbackQuery):
     try:
@@ -900,10 +900,8 @@ async def check_payment(callback: CallbackQuery):
     
     # Получаем информацию о заказе
     cursor.execute('''
-        SELECT o.user_id, o.amount, o.status, p.name, p.file_url, u.username
+        SELECT o.user_id, o.status, o.amount
         FROM orders o
-        LEFT JOIN products p ON o.product_id = p.id
-        LEFT JOIN users u ON o.user_id = u.user_id
         WHERE o.id = ?
     ''', (order_id,))
     order = cursor.fetchone()
@@ -913,7 +911,7 @@ async def check_payment(callback: CallbackQuery):
         conn.close()
         return
     
-    user_id, amount, status, product_name, file_url, username = order
+    user_id, status, amount = order
     
     # Проверка владельца
     if user_id != callback.from_user.id:
@@ -923,13 +921,7 @@ async def check_payment(callback: CallbackQuery):
     
     # Если уже оплачен
     if status == 'paid':
-        review_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📬 Написать отзыв @inlezz", url="https://t.me/inlezz")]
-        ])
-        await callback.message.edit_text(
-            get_text('success', file_url=file_url or "Ссылка появится позже"),
-            reply_markup=review_keyboard
-        )
+        await callback.answer("✅ Заказ уже оплачен!", show_alert=True)
         conn.close()
         return
     
@@ -938,25 +930,33 @@ async def check_payment(callback: CallbackQuery):
     admin_notified = cursor.fetchone()[0]
     
     if admin_notified == 0:
+        # Отмечаем, что уведомление отправлено
         cursor.execute("UPDATE orders SET admin_notified = 1 WHERE id = ?", (order_id,))
         conn.commit()
         
-        pay_url = f"https://yoomoney.ru/to/{YOOMONEY_WALLET}?amount={amount}"
+        # Получаем данные для уведомления админам
+        cursor.execute('SELECT username FROM users WHERE user_id = ?', (user_id,))
+        user_data = cursor.fetchone()
+        username = user_data[0] if user_data else None
         
+        cursor.execute('SELECT name FROM products WHERE id = (SELECT product_id FROM orders WHERE id = ?)', (order_id,))
+        product = cursor.fetchone()
+        product_name = product[0] if product else "Товар"
+        
+        # Отправляем уведомление админам
         for admin_id in ADMIN_IDS:
             try:
                 admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"confirm_{order_id}")],
-                    [InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel_{order_id}")],
-                    [InlineKeyboardButton(text="🔍 ЮMoney", url=pay_url)]
+                    [InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel_{order_id}")]
                 ])
                 
                 await bot.send_message(
                     admin_id,
-                    f"💰 **НОВЫЙ ПЛАТЕЖ**\n\n"
+                    f"💰 **ЗАПРОС НА ПОДТВЕРЖДЕНИЕ**\n\n"
                     f"Заказ #{order_id}\n"
                     f"Пользователь: @{username or 'нет'}\n"
-                    f"Товар: {product_name or 'Удален'}\n"
+                    f"Товар: {product_name}\n"
                     f"Сумма: {amount} руб.",
                     reply_markup=admin_keyboard,
                     parse_mode="Markdown"
@@ -964,9 +964,17 @@ async def check_payment(callback: CallbackQuery):
             except:
                 pass
         
-        await callback.answer("✅ Запрос отправлен админу", show_alert=True)
+        # ТВОЙ ТЕКСТ ПОСЛЕ НАЖАТИЯ КНОПКИ
+        await callback.message.edit_text(
+            "✅ Заявка отправлена администратору. Ожидайте подтверждения.\n"
+            "Если прошло больше 5 минут и нет ответа — напишите @inlezz"
+        )
     else:
-        await callback.answer("⏳ Запрос уже отправлен", show_alert=True)
+        # Если уже отправляли
+        await callback.message.edit_text(
+            "⏳ Заявка уже отправлена администратору. Ожидайте подтверждения.\n"
+            "Если прошло больше 5 минут и нет ответа — напишите @inlezz"
+        )
     
     conn.close()
 
